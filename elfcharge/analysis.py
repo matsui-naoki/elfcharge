@@ -35,11 +35,17 @@ class BondPair:
 
 
 @dataclass
-class AtomRadii:
-    """ELF-derived radii for an atom"""
+class ELFRadii:
+    """ELF-derived radii for an atom (computed from bond analysis)"""
+    atom_index: int = None
+    species: str = None
     distances: List[float] = field(default_factory=list)
     elf_radius: float = None      # Minimum distance (Shannon-like)
     boundary_radius: float = None  # Maximum distance (for electride detection)
+
+
+# Backwards compatibility alias (deprecated, will be removed in v0.4.0)
+AtomRadii = ELFRadii
 
 
 @dataclass
@@ -457,9 +463,13 @@ class ELFAnalyzer:
 
         return False
 
-    def compute_atom_radii(self, bonds: List[BondPair]) -> Dict[int, AtomRadii]:
+    def compute_elf_radii(self, bonds: List[BondPair]) -> Dict[int, ELFRadii]:
         """
-        Compute ELF radii for each atom
+        Compute ELF radii for each atom from bond analysis.
+
+        For each atom, the ELF radius is the minimum distance to an ELF minimum
+        (Shannon-like radius), and the boundary radius is the maximum distance
+        (used for electride detection).
 
         Parameters
         ----------
@@ -468,10 +478,12 @@ class ELFAnalyzer:
 
         Returns
         -------
-        Dict[int, AtomRadii]
-            Dictionary mapping atom index to radii information
+        Dict[int, ELFRadii]
+            Dictionary mapping atom index to ELF radii information
         """
-        radii = {i: AtomRadii() for i in range(self.structure.n_atoms)}
+        species_list = self.structure.get_species_list()
+        radii = {i: ELFRadii(atom_index=i, species=species_list[i])
+                 for i in range(self.structure.n_atoms)}
 
         for bond in bonds:
             if bond.distance_i is not None:
@@ -485,6 +497,11 @@ class ELFAnalyzer:
                 r.boundary_radius = max(r.distances)
 
         return radii
+
+    # Backwards compatibility alias
+    def compute_atom_radii(self, bonds: List[BondPair]) -> Dict[int, ELFRadii]:
+        """Deprecated: Use compute_elf_radii() instead."""
+        return self.compute_elf_radii(bonds)
 
     def find_electride_sites(
         self,
@@ -615,11 +632,11 @@ class ELFAnalyzer:
     def find_interstitial_electrides(
         self,
         elf_threshold: float = 0.5,
-        atom_cutoff: float = 1.0,
-        atom_cutoffs: Optional[Dict[str, float]] = None,
-        atom_radii: Optional[Dict[int, AtomRadii]] = None,
+        elf_radii: Optional[Dict[int, ELFRadii]] = None,
         use_boundary_radius: bool = True,
-        neighborhood_size: int = 3
+        default_cutoff: float = 1.5,
+        neighborhood_size: int = 3,
+        atom_radii: Optional[Dict[int, ELFRadii]] = None  # Deprecated alias
     ) -> List[ElectrideSite]:
         """
         Find electride sites as ELF maxima at interstitial (non-atomic) positions
@@ -629,44 +646,37 @@ class ELFAnalyzer:
         2. Excluding maxima near atomic nuclei (these are core/valence electrons)
         3. Returning only interstitial maxima (electride electrons)
 
-        Following the BadELF paper, atomic boundaries for electride detection use
-        the "boundary radius" (largest ELF minimum distance) rather than the
-        "ELF radius" (smallest distance, corresponding to Shannon crystal radius).
+        The atomic boundary for electride detection uses the "boundary radius"
+        (largest ELF minimum distance from bond analysis).
 
         Parameters
         ----------
         elf_threshold : float
             Minimum ELF value for electride sites (default: 0.5)
-        atom_cutoff : float
-            Default distance cutoff from atomic nuclei in Å (default: 1.0)
-            Used when atom_radii is not provided or species not found.
-        atom_cutoffs : Dict[str, float], optional
-            Species-specific cutoffs. E.g., {'La': 1.0, 'Mg': 1.0, 'H': 0.5}
-            For species not in dict, uses atom_cutoff.
-        atom_radii : Dict[int, AtomRadii], optional
-            Per-atom radii computed from bond analysis. If provided with
-            use_boundary_radius=True, uses each atom's boundary_radius
-            (maximum ELF minimum distance) as per the BadELF paper.
+        elf_radii : Dict[int, ELFRadii], optional
+            Per-atom radii computed from bond analysis (compute_elf_radii).
+            Uses boundary_radius (max ELF minimum distance) for detection.
         use_boundary_radius : bool
-            If True and atom_radii provided, use boundary_radius (max distance
-            to ELF minimum) for electride detection. This is the paper's method.
-            If False, uses atom_cutoffs or atom_cutoff as fallback.
+            If True and elf_radii provided, use boundary_radius.
+        default_cutoff : float
+            Fallback cutoff when elf_radii not available (default: 1.5 Å)
         neighborhood_size : int
             Size of neighborhood for local maximum detection
+        atom_radii : Dict[int, ELFRadii], optional
+            Deprecated: Use elf_radii instead.
 
         Returns
         -------
         List[ElectrideSite]
             List of interstitial electride sites
         """
+        # Handle deprecated parameter
+        if atom_radii is not None and elf_radii is None:
+            elf_radii = atom_radii
         grid = self.elf_data.grid
         lattice = self.structure.lattice
         frac_coords = self.structure.frac_coords
         ngrid = np.array(self.elf_data.ngrid)
-        species_list = self.structure.get_species_list()
-
-        if atom_cutoffs is None:
-            atom_cutoffs = {}
 
         # Find all local maxima with periodic boundary conditions
         padded = np.pad(grid, neighborhood_size, mode='wrap')
@@ -696,17 +706,13 @@ class ELFAnalyzer:
                 diff_cart = diff @ lattice
                 dist = np.linalg.norm(diff_cart)
 
-                # Determine cutoff for this atom
-                # Priority: atom_radii.boundary_radius > atom_cutoffs > atom_cutoff
-                if use_boundary_radius and atom_radii is not None and i in atom_radii:
-                    cutoff = atom_radii[i].boundary_radius
+                # Determine cutoff for this atom from elf_radii
+                if use_boundary_radius and elf_radii is not None and i in elf_radii:
+                    cutoff = elf_radii[i].boundary_radius
                     if cutoff is None:
-                        # Fallback to species-specific or default
-                        sp = species_list[i]
-                        cutoff = atom_cutoffs.get(sp, atom_cutoff)
+                        cutoff = default_cutoff
                 else:
-                    sp = species_list[i]
-                    cutoff = atom_cutoffs.get(sp, atom_cutoff)
+                    cutoff = default_cutoff
 
                 if dist < cutoff:
                     is_near_atom = True

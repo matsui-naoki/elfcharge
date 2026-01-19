@@ -15,31 +15,27 @@ Main features:
 - Export structures with electride sites to CIF/POSCAR
 
 Example usage:
-    from elfcharge import read_elfcar, read_chgcar, ELFAnalyzer
-    from elfcharge import create_structure_with_electrides
+    from elfcharge import run_badelf_analysis
 
-    # Load VASP data
-    elf_data = read_elfcar("ELFCAR")
-    chg_data = read_chgcar("CHGCAR")
-
-    # Analyze ELF to find electride sites
-    analyzer = ELFAnalyzer(elf_data)
-    electride_sites = analyzer.find_interstitial_electrides(
-        elf_threshold=0.5,
-        atom_cutoffs={'La': 1.0, 'Mg': 1.0, 'H': 0.5}
+    # Run complete analysis (recommended)
+    result = run_badelf_analysis(
+        elfcar_path="ELFCAR",
+        chgcar_path="CHGCAR",
+        oxidation_states={'Y': 3, 'C': -4},
+        core_radii={'Y': 0.8, 'C': 0.3},
+        elf_threshold=0.5
     )
 
-    # Export structure with electride sites as dummy atom "X"
-    structure = create_structure_with_electrides(elf_data, electride_sites)
-    structure.to(filename="structure_with_electrides.cif")
+    # Access results
+    print(result.oxidation.species_avg_oxidation)
 """
 
 from importlib.metadata import version, PackageNotFoundError
 
 from .io import read_elfcar, read_chgcar, GridData, check_grid_resolution
-from .analysis import ELFAnalyzer, ElectrideSite, BondPair, AtomRadii
+from .analysis import ELFAnalyzer, ElectrideSite, BondPair, ELFRadii, AtomRadii  # AtomRadii is deprecated alias
 from .partition import VoronoiPartitioner
-from .integrate import ATOMIC_NUMBERS
+from .integrate import ATOMIC_NUMBERS, DEFAULT_ZVAL
 from .structure import (
     create_structure_with_electrides,
     write_structure_cif,
@@ -67,7 +63,7 @@ except ImportError:
 try:
     __version__ = version("elfcharge")
 except PackageNotFoundError:
-    __version__ = "0.2.0"  # Fallback for development
+    __version__ = "0.3.0"  # Fallback for development
 
 __author__ = "Naoki Matsui"
 
@@ -82,29 +78,18 @@ __all__ = [
     "ELFAnalyzer",
     "ElectrideSite",
     "BondPair",
+    "ELFRadii",
+    "AtomRadii",  # Deprecated alias for ELFRadii
     # Partitioning
     "VoronoiPartitioner",
     # Integration
     "ATOMIC_NUMBERS",
+    "DEFAULT_ZVAL",
     # Structure output
     "create_structure_with_electrides",
     "write_structure_cif",
     "write_structure_poscar",
     "BadELFResult",
-    # ZVAL
-    "ZVAL",
+    # High-level API
+    "run_badelf_analysis",
 ]
-
-# ZVAL (valence electrons) - common POTCAR values
-ZVAL = {
-    'H': 1, 'He': 2,
-    'Li': 1, 'Be': 2, 'B': 3, 'C': 4, 'N': 5, 'O': 6, 'F': 7, 'Ne': 8,
-    'Na': 1, 'Mg': 2, 'Al': 3, 'Si': 4, 'P': 5, 'S': 6, 'Cl': 7, 'Ar': 8,
-    'K': 9, 'Ca': 10, 'Sc': 11, 'Ti': 12, 'V': 13, 'Cr': 12, 'Mn': 13,
-    'Fe': 8, 'Co': 9, 'Ni': 10, 'Cu': 11, 'Zn': 12,
-    'Ga': 13, 'Ge': 14, 'As': 5, 'Se': 6, 'Br': 7, 'Kr': 8,
-    'Rb': 9, 'Sr': 10, 'Y': 11, 'Zr': 12, 'Nb': 13, 'Mo': 14,
-    'La': 11, 'Ce': 12, 'Pr': 13, 'Nd': 14,
-    # Mg_pv uses 8 valence electrons (2s²2p⁶3s²)
-    'Mg_pv': 8,
-}

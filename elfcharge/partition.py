@@ -13,7 +13,7 @@ from scipy.ndimage import watershed_ift, label, distance_transform_edt
 from dataclasses import dataclass
 
 from .io import GridData
-from .analysis import BondPair, ElectrideSite, AtomRadii
+from .analysis import BondPair, ElectrideSite, ELFRadii
 
 
 @dataclass
@@ -332,7 +332,11 @@ class BaderPartitioner:
 
         return labels
 
-    def watershed_partition(self, markers: Optional[np.ndarray] = None) -> np.ndarray:
+    def watershed_partition(
+        self,
+        markers: Optional[np.ndarray] = None,
+        atom_frac_coords: Optional[np.ndarray] = None
+    ) -> np.ndarray:
         """
         Partition space using watershed segmentation on inverted ELF
 
@@ -342,6 +346,9 @@ class BaderPartitioner:
         ----------
         markers : np.ndarray, optional
             Pre-defined markers for watershed. If None, use detected maxima.
+        atom_frac_coords : np.ndarray, optional
+            Fractional coordinates of atoms to add as markers.
+            This ensures atoms with low ELF values (like C) are still marked.
 
         Returns
         -------
@@ -368,6 +375,18 @@ class BaderPartitioner:
             # Label connected components of maxima
             markers, n_features = label(is_max)
             markers = markers.astype(np.int32)
+
+            # Add atom positions as markers if provided
+            # This is critical for atoms with low ELF values (e.g., C in covalent bonds)
+            if atom_frac_coords is not None:
+                next_label = n_features + 1
+                ngrid = np.array(self.ngrid)
+                for i, frac in enumerate(atom_frac_coords):
+                    grid_idx = tuple((frac * ngrid).astype(int) % ngrid)
+                    # Only add if not already marked
+                    if markers[grid_idx] == 0:
+                        markers[grid_idx] = next_label
+                        next_label += 1
 
         # Pad markers
         markers_padded = np.pad(markers, pad_size, mode='wrap')
@@ -408,31 +427,21 @@ class BadELFPartitioner:
     def partition(
         self,
         bonds: List[BondPair],
-        electride_sites: List[ElectrideSite],
-        method: str = 'watershed',
-        use_elf_planes: bool = False
+        electride_sites: List[ElectrideSite]
     ) -> PartitionResult:
         """
-        Perform BadELF partitioning
+        Perform spatial partitioning using simple Voronoi method.
 
-        Strategy (following BadELF paper):
-        1. Atom-atom boundaries: Voronoi with ELF minima planes
-        2. Atom-electride boundaries: Zero-flux surfaces in ELF gradient
-           (implemented via watershed on inverted ELF)
-
-        The key insight is that we use zero-flux (watershed) to determine
-        which regions belong to electride sites, but we preserve atomic
-        regions from Voronoi partitioning to maintain chemically reasonable
-        atomic volumes.
+        Strategy:
+        1. Simple Voronoi partitioning for all sites (atoms + electrides)
+        2. All electride sites are merged into a single region
 
         Parameters
         ----------
         bonds : List[BondPair]
-            Analyzed bonds with ELF minima
+            Analyzed bonds (used for reference, not for partitioning)
         electride_sites : List[ElectrideSite]
             Detected electride sites
-        method : str
-            'watershed' or 'steepest_ascent' for zero-flux partitioning
 
         Returns
         -------
@@ -442,134 +451,78 @@ class BadELFPartitioner:
         n_atoms = self.elf_data.n_atoms
         n_electride = len(electride_sites)
         ngrid = self.elf_data.ngrid
-
-        # Step 1: Voronoi partition for atoms (with optional ELF plane adjustment)
-        if use_elf_planes:
-            atom_labels = self.voronoi.partition_with_elf_planes(bonds)
-        else:
-            atom_labels = self.voronoi.simple_voronoi()
-
-        # If no electride sites, just return atom partition
-        if n_electride == 0:
-            return PartitionResult(
-                labels=atom_labels + 1,  # Convert to 1-indexed
-                n_atoms=n_atoms,
-                n_electride_sites=0,
-                atom_labels=list(range(1, n_atoms + 1)),
-                electride_labels=[]
-            )
-
-        # Step 2: Extended Voronoi including electride sites
-        # This determines atom-electride boundaries
         lattice = self.elf_data.lattice
 
-        # All site coordinates (atoms + electrides)
-        all_frac_coords = np.vstack([
-            self.elf_data.frac_coords,
-            np.array([site.frac_coord for site in electride_sites])
-        ])
+        # Step 1: Create combined coordinates (atoms + electrides)
+        if n_electride > 0:
+            all_frac_coords = np.vstack([
+                self.elf_data.frac_coords,
+                np.array([site.frac_coord for site in electride_sites])
+            ])
+        else:
+            all_frac_coords = self.elf_data.frac_coords
 
-        # Create fractional grid
-        fx = np.linspace(0, 1, ngrid[0], endpoint=False)
-        fy = np.linspace(0, 1, ngrid[1], endpoint=False)
-        fz = np.linspace(0, 1, ngrid[2], endpoint=False)
+        n_total_sites = n_atoms + n_electride
+
+        # Step 2: Perform simple Voronoi partitioning for ALL sites (atoms + electrides)
+        ngx, ngy, ngz = ngrid
+        fx = np.linspace(0, 1, ngx, endpoint=False)
+        fy = np.linspace(0, 1, ngy, endpoint=False)
+        fz = np.linspace(0, 1, ngz, endpoint=False)
         FX, FY, FZ = np.meshgrid(fx, fy, fz, indexing='ij')
         grid_frac = np.stack([FX, FY, FZ], axis=-1)
 
-        # Find nearest site for each grid point (Voronoi for all sites)
         min_dist_sq = np.full(ngrid, np.inf)
-        nearest_site = np.zeros(ngrid, dtype=np.int32)
+        labels = np.zeros(ngrid, dtype=np.int32)
 
-        for i in range(n_atoms + n_electride):
+        for i in range(n_total_sites):
             site_frac = all_frac_coords[i]
             diff = grid_frac - site_frac
-            diff = diff - np.round(diff)  # Minimum image
+            diff = diff - np.round(diff)
             diff_cart = np.einsum('...j,jk->...k', diff, lattice)
             dist_sq = np.sum(diff_cart ** 2, axis=-1)
 
             closer = dist_sq < min_dist_sq
-            nearest_site[closer] = i
+            labels[closer] = i
             min_dist_sq[closer] = dist_sq[closer]
 
-        # Step 3: Create markers for watershed (for electride-electride boundaries)
-        markers = np.zeros(ngrid, dtype=np.int32)
+        # Step 3: Create final labels
+        # Atoms: 1 to n_atoms
+        # All electrides merged: n_atoms + 1
+        final_labels = np.zeros(ngrid, dtype=np.int32)
+        for i in range(n_atoms):
+            final_labels[labels == i] = i + 1
 
-        # Set electride markers at ELF maxima positions
-        for i, site in enumerate(electride_sites):
-            markers[site.grid_index] = n_atoms + i + 1
+        if n_electride > 0:
+            for i in range(n_atoms, n_total_sites):
+                final_labels[labels == i] = n_atoms + 1
 
-        # Step 4: Run zero-flux partitioning on ELF for electride regions only
-        # This handles electride-electride boundaries correctly
-        if method == 'watershed' and n_electride > 1:
-            # Only run watershed on the electride regions (where nearest_site >= n_atoms)
-            electride_region_mask = nearest_site >= n_atoms
-
-            # Create markers only for electride sites
-            electride_markers = np.zeros(ngrid, dtype=np.int32)
-            for i, site in enumerate(electride_sites):
-                electride_markers[site.grid_index] = i + 1  # 1-indexed for watershed
-
-            # Run watershed
-            zeroflux_labels = self.bader.watershed_partition(electride_markers)
-        else:
-            zeroflux_labels = None
-
-        # Step 5: Combine partitioning results
-        # Start with atom Voronoi labels (1-indexed)
-        final_labels = atom_labels + 1
-
-        # Assign electride regions
-        for i in range(n_electride):
-            # Use Voronoi result for atom-electride boundary
-            voronoi_electride_mask = nearest_site == (n_atoms + i)
-
-            if zeroflux_labels is not None and n_electride > 1:
-                # For electride-electride boundaries, use watershed result
-                # Only apply within the Voronoi electride region
-                electride_label = n_atoms + i + 1
-
-                # Watershed label for this electride (1-indexed in watershed)
-                watershed_mask = (zeroflux_labels == (i + 1))
-
-                # Combine: must be in overall electride region (any electride's Voronoi)
-                # AND assigned to this electride by watershed
-                overall_electride_region = nearest_site >= n_atoms
-                combined_mask = overall_electride_region & watershed_mask
-
-                final_labels[combined_mask] = electride_label
-            else:
-                # Single electride or no watershed: use Voronoi directly
-                final_labels[voronoi_electride_mask] = n_atoms + i + 1
+        # Determine actual number of electride regions
+        actual_n_electride = 1 if n_electride > 0 and np.any(final_labels == n_atoms + 1) else 0
 
         return PartitionResult(
             labels=final_labels,
             n_atoms=n_atoms,
-            n_electride_sites=n_electride,
+            n_electride_sites=actual_n_electride,
             atom_labels=list(range(1, n_atoms + 1)),
-            electride_labels=list(range(n_atoms + 1, n_atoms + n_electride + 1))
+            electride_labels=[n_atoms + 1] if actual_n_electride > 0 else []
         )
 
-    def partition_atoms_only(self, bonds: List[BondPair], use_elf_planes: bool = False) -> np.ndarray:
+    def partition_atoms_only(self, bonds: List[BondPair]) -> np.ndarray:
         """
-        Partition only atomic regions (no electride sites)
+        Partition only atomic regions (no electride sites) using simple Voronoi.
 
         Parameters
         ----------
         bonds : List[BondPair]
-            Analyzed bonds with ELF minima
-        use_elf_planes : bool
-            If True, adjust boundaries based on ELF minima planes.
-            Default False uses simple Voronoi which gives stable results.
+            Analyzed bonds (used for reference)
 
         Returns
         -------
         np.ndarray
             Labels array with atoms labeled 1 to n_atoms
         """
-        if use_elf_planes:
-            atom_labels = self.voronoi.partition_with_elf_planes(bonds)
-        else:
-            atom_labels = self.voronoi.simple_voronoi()
+        atom_labels = self.voronoi.simple_voronoi()
         return atom_labels + 1  # Convert from 0-indexed to 1-indexed
 
     def partition_with_bader(

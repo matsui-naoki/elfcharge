@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "elfcharge"
-version = "0.2.0"
+version = "0.3.0"
 description = "Bader analysis based on ELF for electride electron counting"
 readme = "README.md"
 license = {text = "MIT"}

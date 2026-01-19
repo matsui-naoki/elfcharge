@@ -10,7 +10,7 @@ from typing import List, Dict, Optional, Tuple
 from pathlib import Path
 
 from .io import GridData, read_elfcar, read_chgcar, write_chgcar
-from .analysis import ELFAnalyzer, BondPair, ElectrideSite, AtomRadii
+from .analysis import ELFAnalyzer, BondPair, ElectrideSite, ELFRadii
 from .partition import BadELFPartitioner, PartitionResult
 from .integrate import ChargeIntegrator, OxidationCalculator, ChargeResult, OxidationResult
 
@@ -24,7 +24,7 @@ class BadELFResult:
 
     # Bond analysis
     bonds: List[BondPair]
-    atom_radii: Dict[int, AtomRadii]
+    elf_radii: Dict[int, ELFRadii]
 
     # Electride sites
     electride_sites: List[ElectrideSite]
@@ -144,18 +144,18 @@ class BadELFAnalyzer:
         max_elf = max(b.elf_minimum_value for b in bonds if b.elf_minimum_value is not None)
         print(f"  ELF minimum range: [{min_elf:.3f}, {max_elf:.3f}]")
 
-        # Step 3: Compute atom radii
-        print("\nStep 3: Computing atomic radii...")
-        atom_radii = self.elf_analyzer.compute_atom_radii(bonds)
+        # Step 3: Compute ELF radii
+        print("\nStep 3: Computing ELF radii...")
+        elf_radii = self.elf_analyzer.compute_elf_radii(bonds)
         species_list = self.elf_data.get_species_list()
-        for i, r in atom_radii.items():
+        for i, r in elf_radii.items():
             if r.elf_radius is not None:
                 print(f"  Atom {i} ({species_list[i]}): ELF radius = {r.elf_radius:.3f} Å, "
                       f"boundary = {r.boundary_radius:.3f} Å")
 
         # Step 4: Find electride sites
         print("\nStep 4: Detecting electride sites...")
-        boundary_radii = {i: r.boundary_radius for i, r in atom_radii.items() if r.boundary_radius}
+        boundary_radii = {i: r.boundary_radius for i, r in elf_radii.items() if r.boundary_radius}
         electride_sites = self.elf_analyzer.find_electride_sites(
             boundary_radii,
             elf_threshold=self.elf_threshold
@@ -200,7 +200,7 @@ class BadELFAnalyzer:
             elf_data=self.elf_data,
             chg_data=self.chg_data,
             bonds=bonds,
-            atom_radii=atom_radii,
+            elf_radii=elf_radii,
             electride_sites=electride_sites,
             partition=partition,
             charges=charges,
@@ -236,9 +236,9 @@ class BadELFAnalyzer:
         for i, bond in enumerate(bonds):
             bonds[i] = self.elf_analyzer.analyze_bond_elf(bond)
 
-        # Step 3: Compute atom radii
-        print("\nStep 3: Computing atomic radii...")
-        atom_radii = self.elf_analyzer.compute_atom_radii(bonds)
+        # Step 3: Compute ELF radii
+        print("\nStep 3: Computing ELF radii...")
+        elf_radii = self.elf_analyzer.compute_elf_radii(bonds)
 
         # Step 4: Partition (atoms only)
         print("\nStep 4: Partitioning space...")
@@ -273,7 +273,7 @@ class BadELFAnalyzer:
             elf_data=self.elf_data,
             chg_data=self.chg_data,
             bonds=bonds,
-            atom_radii=atom_radii,
+            elf_radii=elf_radii,
             electride_sites=[],
             partition=partition,
             charges=charges,
@@ -353,9 +353,7 @@ def run_badelf_analysis(
     zval: Optional[Dict[str, float]] = None,
     oxidation_states: Optional[Dict[str, float]] = None,
     core_radii: Optional[Dict[str, float]] = None,
-    atom_cutoffs: Optional[Dict[str, float]] = None,
     elf_threshold: float = 0.5,
-    use_elf_planes: bool = False,
     apply_smooth: bool = False,
     smooth_size: int = 3,
     save_dir: Optional[str] = None,
@@ -375,26 +373,21 @@ def run_badelf_analysis(
     elfcar_path : str
         Path to ELFCAR file
     chgcar_path : str
-        Path to CHGCAR file (should be CHGCAR_sum with core electrons)
+        Path to CHGCAR file (valence electrons only, not CHGCAR_sum)
     zval : Dict[str, float], optional
-        Valence electrons per species. E.g., {'La': 11, 'Mg': 8, 'H': 1}
-        If not provided, uses default values from the package.
+        Valence electrons per species. E.g., {'Y': 11, 'C': 4}
+        If not provided, uses DEFAULT_ZVAL from Materials Project recommendations.
     oxidation_states : Dict[str, float], optional
         Expected oxidation states per species for improved CrystalNN accuracy.
-        E.g., {'La': 3, 'Mg': 2, 'H': -1}
+        E.g., {'Y': 3, 'C': -4}
     core_radii : Dict[str, float], optional
         Core radii to exclude when finding ELF minima along bonds.
-        E.g., {'La': 0.8, 'Mg': 0.5, 'H': 0.0}
-    atom_cutoffs : Dict[str, float], optional
-        Species-specific cutoffs for electride detection (fallback if bonds
-        not analyzed). E.g., {'La': 1.5, 'Mg': 1.2, 'H': 0.5}
+        Important for heavy elements where ELF is low in the core region.
+        E.g., {'Y': 0.8, 'C': 0.3}
     elf_threshold : float
         Minimum ELF value for electride site detection (default: 0.5)
-    use_elf_planes : bool
-        If True, use ELF minimum planes to adjust atom-atom boundaries.
-        If False (default), use simple Voronoi partitioning which is more stable.
     apply_smooth : bool
-        If True, apply smoothing to ELF data for cleaner visualization.
+        If True, apply smoothing to ELF data for cleaner analysis and visualization.
         Default: False
     smooth_size : int
         Size of smoothing kernel (default: 3)
@@ -417,10 +410,9 @@ def run_badelf_analysis(
     >>> from elfcharge import run_badelf_analysis
     >>> result = run_badelf_analysis(
     ...     elfcar_path="ELFCAR",
-    ...     chgcar_path="CHGCAR_sum",
-    ...     zval={'La': 11, 'Mg': 8, 'H': 1},
-    ...     oxidation_states={'La': 3, 'Mg': 2, 'H': -1},
-    ...     core_radii={'La': 0.8, 'Mg': 0.5, 'H': 0.0},
+    ...     chgcar_path="CHGCAR",
+    ...     oxidation_states={'Y': 3, 'C': -4},
+    ...     core_radii={'Y': 0.8, 'C': 0.3},
     ...     apply_smooth=True,
     ...     save_dir="./badelf_results"
     ... )
@@ -480,13 +472,13 @@ def run_badelf_analysis(
     for i, bond in enumerate(bonds):
         bonds[i] = elf_analyzer.analyze_bond_elf(bond, core_radii=core_radii)
 
-    # Compute atom radii
-    atom_radii = elf_analyzer.compute_atom_radii(bonds)
+    # Compute ELF radii
+    elf_radii = elf_analyzer.compute_elf_radii(bonds)
     species_list = elf_data.get_species_list()
 
     if verbose:
-        print("  Atom radii (ELF / Boundary):")
-        for i, r in atom_radii.items():
+        print("  ELF radii (ELF / Boundary):")
+        for i, r in elf_radii.items():
             if r.elf_radius is not None:
                 print(f"    {i:3d} ({species_list[i]:2s}): {r.elf_radius:.3f} / {r.boundary_radius:.3f} Å")
 
@@ -496,8 +488,7 @@ def run_badelf_analysis(
 
     electride_sites = elf_analyzer.find_interstitial_electrides(
         elf_threshold=elf_threshold,
-        atom_cutoffs=atom_cutoffs,
-        atom_radii=atom_radii,
+        elf_radii=elf_radii,
         use_boundary_radius=True
     )
 
@@ -507,20 +498,13 @@ def run_badelf_analysis(
             print(f"    Site {i}: ELF={site.elf_value:.3f} at ({site.frac_coord[0]:.3f}, "
                   f"{site.frac_coord[1]:.3f}, {site.frac_coord[2]:.3f})")
 
-    # Step 5: Partition space
+    # Step 5: Partition space using simple Voronoi
     if verbose:
         print(f"\n[5/7] Partitioning space...")
-        if use_elf_planes:
-            print("  Using ELF plane boundaries (experimental)")
-        else:
-            print("  Using simple Voronoi partitioning")
+        print("  Using simple Voronoi partitioning")
 
     partitioner = BadELFPartitioner(elf_data, chg_data)
-    partition = partitioner.partition(
-        bonds, electride_sites,
-        method='watershed',
-        use_elf_planes=use_elf_planes
-    )
+    partition = partitioner.partition(bonds, electride_sites)
 
     if verbose:
         print(f"  Atomic regions: {partition.n_atoms}")
@@ -558,19 +542,17 @@ def run_badelf_analysis(
 
         if len(electride_sites) > 0:
             print("\nElectride charges:")
-            total_e_charge = 0.0
-            for i in range(len(electride_sites)):
-                e_charge = oxidation.electride_charges[i]
-                total_e_charge += e_charge
-                print(f"  Site {i}: {e_charge:+.4f} e")
-            print(f"  Total: {total_e_charge:+.4f} e")
+            # Note: All electride sites are merged into a single region
+            total_e_charge = np.sum(charges.electride_electrons)
+            print(f"  Total electride electrons: {total_e_charge:.4f} e")
+            print(f"  (from {len(electride_sites)} detected sites, merged into single region)")
 
     # Create result object
     result = BadELFResult(
         elf_data=elf_data,
         chg_data=chg_data,
         bonds=bonds,
-        atom_radii=atom_radii,
+        elf_radii=elf_radii,
         electride_sites=electride_sites,
         partition=partition,
         charges=charges,

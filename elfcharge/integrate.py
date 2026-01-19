@@ -32,6 +32,107 @@ ATOMIC_NUMBERS = {
     'Rn': 86, 'Fr': 87, 'Ra': 88, 'Ac': 89, 'Th': 90, 'Pa': 91, 'U': 92,
 }
 
+# Default ZVAL (valence electrons) based on Materials Project recommended POTCARs
+# Reference: https://docs.materialsproject.org/methodology/materials-methodology/calculation-details/gga+u-calculations/pseudopotentials
+DEFAULT_ZVAL = {
+    # Period 1
+    'H': 1,      # H
+    'He': 2,     # He
+    # Period 2
+    'Li': 3,     # Li_sv
+    'Be': 4,     # Be_sv (2s2 + 2 semi-core = 4, but standard Be_sv has 4)
+    'B': 3,      # B
+    'C': 4,      # C
+    'N': 5,      # N
+    'O': 6,      # O
+    'F': 7,      # F
+    'Ne': 8,     # Ne
+    # Period 3
+    'Na': 7,     # Na_pv (2p6 3s1)
+    'Mg': 8,     # Mg_pv (2p6 3s2)
+    'Al': 3,     # Al
+    'Si': 4,     # Si
+    'P': 5,      # P
+    'S': 6,      # S
+    'Cl': 7,     # Cl
+    'Ar': 8,     # Ar
+    # Period 4
+    'K': 9,      # K_sv (3s2 3p6 4s1)
+    'Ca': 10,    # Ca_sv (3s2 3p6 4s2)
+    'Sc': 11,    # Sc_sv (3s2 3p6 3d1 4s2)
+    'Ti': 10,    # Ti_pv (3p6 3d2 4s2)
+    'V': 11,     # V_pv (3p6 3d3 4s2)
+    'Cr': 12,    # Cr_pv (3p6 3d5 4s1)
+    'Mn': 13,    # Mn_pv (3p6 3d5 4s2)
+    'Fe': 14,    # Fe_pv (3p6 3d6 4s2)
+    'Co': 9,     # Co
+    'Ni': 16,    # Ni_pv (3p6 3d8 4s2)
+    'Cu': 17,    # Cu_pv (3p6 3d10 4s1)
+    'Zn': 12,    # Zn
+    'Ga': 13,    # Ga_d (3d10 4s2 4p1)
+    'Ge': 14,    # Ge_d (3d10 4s2 4p2)
+    'As': 5,     # As
+    'Se': 6,     # Se
+    'Br': 7,     # Br
+    'Kr': 8,     # Kr
+    # Period 5
+    'Rb': 9,     # Rb_sv (4s2 4p6 5s1)
+    'Sr': 10,    # Sr_sv (4s2 4p6 5s2)
+    'Y': 11,     # Y_sv (4s2 4p6 4d1 5s2)
+    'Zr': 12,    # Zr_sv (4s2 4p6 4d2 5s2)
+    'Nb': 11,    # Nb_pv (4p6 4d4 5s1)
+    'Mo': 12,    # Mo_pv (4p6 4d5 5s1)
+    'Tc': 13,    # Tc_pv (4p6 4d5 5s2)
+    'Ru': 14,    # Ru_pv (4p6 4d7 5s1)
+    'Rh': 15,    # Rh_pv (4p6 4d8 5s1)
+    'Pd': 10,    # Pd (4d10)
+    'Ag': 11,    # Ag
+    'Cd': 12,    # Cd
+    'In': 13,    # In_d (4d10 5s2 5p1)
+    'Sn': 14,    # Sn_d (4d10 5s2 5p2)
+    'Sb': 5,     # Sb
+    'Te': 6,     # Te
+    'I': 7,      # I
+    'Xe': 8,     # Xe
+    # Period 6
+    'Cs': 9,     # Cs_sv (5s2 5p6 6s1)
+    'Ba': 10,    # Ba_sv (5s2 5p6 6s2)
+    'La': 11,    # La (5s2 5p6 5d1 6s2)
+    'Ce': 12,    # Ce (4f1 5s2 5p6 5d1 6s2)
+    'Pr': 13,    # Pr_3 (4f3 6s2)
+    'Nd': 14,    # Nd_3 (4f4 6s2)
+    'Pm': 15,    # Pm_3 (4f5 6s2)
+    'Sm': 16,    # Sm_3 (4f6 6s2)
+    'Eu': 17,    # Eu (4f7 6s2) - note: not Eu_3
+    'Gd': 18,    # Gd (4f7 5d1 6s2) - note: not Gd_3
+    'Tb': 19,    # Tb_3 (4f9 6s2)
+    'Dy': 20,    # Dy_3 (4f10 6s2)
+    'Ho': 21,    # Ho_3 (4f11 6s2)
+    'Er': 22,    # Er_3 (4f12 6s2)
+    'Tm': 23,    # Tm_3 (4f13 6s2)
+    'Yb': 24,    # Yb_3 (4f14 6s2) - as of 2023-05-02
+    'Lu': 25,    # Lu_3 (4f14 5d1 6s2)
+    'Hf': 10,    # Hf_pv (5p6 5d2 6s2)
+    'Ta': 11,    # Ta_pv (5p6 5d3 6s2)
+    'W': 12,     # W_pv (5p6 5d4 6s2)
+    'Re': 13,    # Re_pv (5p6 5d5 6s2)
+    'Os': 14,    # Os_pv (5p6 5d6 6s2)
+    'Ir': 9,     # Ir
+    'Pt': 10,    # Pt
+    'Au': 11,    # Au
+    'Hg': 12,    # Hg
+    'Tl': 13,    # Tl_d (5d10 6s2 6p1)
+    'Pb': 14,    # Pb_d (5d10 6s2 6p2)
+    'Bi': 5,     # Bi
+    # Actinides
+    'Ac': 11,    # Ac
+    'Th': 12,    # Th
+    'Pa': 13,    # Pa
+    'U': 14,     # U
+    'Np': 15,    # Np
+    'Pu': 16,    # Pu
+}
+
 
 @dataclass
 class ChargeResult:
@@ -297,9 +398,11 @@ class OxidationCalculator:
         atom_ox = np.zeros(n_atoms)
 
         for i, species in enumerate(self.species_list):
-            # Use ZVAL if provided, otherwise fall back to atomic number
+            # Use ZVAL if provided, otherwise fall back to DEFAULT_ZVAL, then atomic number
             if self.zval is not None and species in self.zval:
                 z = self.zval[species]
+            elif species in DEFAULT_ZVAL:
+                z = DEFAULT_ZVAL[species]
             else:
                 z = self.get_nuclear_charge(species)
             electrons = charges.atom_electrons[i]
