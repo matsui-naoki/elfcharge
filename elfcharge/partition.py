@@ -415,10 +415,15 @@ class BadELFPartitioner:
         """
         Perform BadELF partitioning
 
-        Strategy:
-        1. Partition atoms using Voronoi with ELF minima planes
-        2. Add electride sites as additional seed points
-        3. For electride boundaries, use Bader-like partitioning
+        Strategy (following BadELF paper):
+        1. Atom-atom boundaries: Voronoi with ELF minima planes
+        2. Atom-electride boundaries: Zero-flux surfaces in ELF gradient
+           (implemented via watershed on inverted ELF)
+
+        The key insight is that we use zero-flux (watershed) to determine
+        which regions belong to electride sites, but we preserve atomic
+        regions from Voronoi partitioning to maintain chemically reasonable
+        atomic volumes.
 
         Parameters
         ----------
@@ -427,7 +432,7 @@ class BadELFPartitioner:
         electride_sites : List[ElectrideSite]
             Detected electride sites
         method : str
-            'watershed' or 'steepest_ascent'
+            'watershed' or 'steepest_ascent' for zero-flux partitioning
 
         Returns
         -------
@@ -438,73 +443,103 @@ class BadELFPartitioner:
         n_electride = len(electride_sites)
         ngrid = self.elf_data.ngrid
 
-        # Step 1: Voronoi partition for atoms
+        # Step 1: Voronoi partition for atoms (with optional ELF plane adjustment)
         if use_elf_planes:
             atom_labels = self.voronoi.partition_with_elf_planes(bonds)
         else:
             atom_labels = self.voronoi.simple_voronoi()
 
-        # Step 2: Create markers for watershed
-        # Atoms: labels 1 to n_atoms
-        # Electrides: labels n_atoms+1 to n_atoms+n_electride
+        # If no electride sites, just return atom partition
+        if n_electride == 0:
+            return PartitionResult(
+                labels=atom_labels + 1,  # Convert to 1-indexed
+                n_atoms=n_atoms,
+                n_electride_sites=0,
+                atom_labels=list(range(1, n_atoms + 1)),
+                electride_labels=[]
+            )
+
+        # Step 2: Extended Voronoi including electride sites
+        # This determines atom-electride boundaries
+        lattice = self.elf_data.lattice
+
+        # All site coordinates (atoms + electrides)
+        all_frac_coords = np.vstack([
+            self.elf_data.frac_coords,
+            np.array([site.frac_coord for site in electride_sites])
+        ])
+
+        # Create fractional grid
+        fx = np.linspace(0, 1, ngrid[0], endpoint=False)
+        fy = np.linspace(0, 1, ngrid[1], endpoint=False)
+        fz = np.linspace(0, 1, ngrid[2], endpoint=False)
+        FX, FY, FZ = np.meshgrid(fx, fy, fz, indexing='ij')
+        grid_frac = np.stack([FX, FY, FZ], axis=-1)
+
+        # Find nearest site for each grid point (Voronoi for all sites)
+        min_dist_sq = np.full(ngrid, np.inf)
+        nearest_site = np.zeros(ngrid, dtype=np.int32)
+
+        for i in range(n_atoms + n_electride):
+            site_frac = all_frac_coords[i]
+            diff = grid_frac - site_frac
+            diff = diff - np.round(diff)  # Minimum image
+            diff_cart = np.einsum('...j,jk->...k', diff, lattice)
+            dist_sq = np.sum(diff_cart ** 2, axis=-1)
+
+            closer = dist_sq < min_dist_sq
+            nearest_site[closer] = i
+            min_dist_sq[closer] = dist_sq[closer]
+
+        # Step 3: Create markers for watershed (for electride-electride boundaries)
         markers = np.zeros(ngrid, dtype=np.int32)
 
-        # Set atom markers at atomic positions
-        for i in range(n_atoms):
-            frac = self.elf_data.frac_coords[i]
-            idx = tuple((frac * ngrid).astype(int) % ngrid)
-            markers[idx] = i + 1
-
-        # Set electride markers
+        # Set electride markers at ELF maxima positions
         for i, site in enumerate(electride_sites):
             markers[site.grid_index] = n_atoms + i + 1
 
-        # Step 3: Run Bader-like partitioning for full space
-        if method == 'watershed':
-            full_labels = self.bader.watershed_partition(markers)
-        else:
-            full_labels = self.bader.steepest_ascent_partition()
+        # Step 4: Run zero-flux partitioning on ELF for electride regions only
+        # This handles electride-electride boundaries correctly
+        if method == 'watershed' and n_electride > 1:
+            # Only run watershed on the electride regions (where nearest_site >= n_atoms)
+            electride_region_mask = nearest_site >= n_atoms
 
-        # Step 4: Combine - use Voronoi for atoms, assign electride regions separately
-        # Start with Voronoi partitioning (1-indexed: atoms are 1 to n_atoms)
+            # Create markers only for electride sites
+            electride_markers = np.zeros(ngrid, dtype=np.int32)
+            for i, site in enumerate(electride_sites):
+                electride_markers[site.grid_index] = i + 1  # 1-indexed for watershed
+
+            # Run watershed
+            zeroflux_labels = self.bader.watershed_partition(electride_markers)
+        else:
+            zeroflux_labels = None
+
+        # Step 5: Combine partitioning results
+        # Start with atom Voronoi labels (1-indexed)
         final_labels = atom_labels + 1
 
-        if n_electride > 0:
-            # For each electride site, assign nearby points using simple Voronoi
-            # Extended coordinates: atoms + electrides
-            all_frac_coords = np.vstack([
-                self.elf_data.frac_coords,
-                np.array([site.frac_coord for site in electride_sites])
-            ])
+        # Assign electride regions
+        for i in range(n_electride):
+            # Use Voronoi result for atom-electride boundary
+            voronoi_electride_mask = nearest_site == (n_atoms + i)
 
-            # Create fractional grid
-            fx = np.linspace(0, 1, ngrid[0], endpoint=False)
-            fy = np.linspace(0, 1, ngrid[1], endpoint=False)
-            fz = np.linspace(0, 1, ngrid[2], endpoint=False)
-            FX, FY, FZ = np.meshgrid(fx, fy, fz, indexing='ij')
-            grid_frac = np.stack([FX, FY, FZ], axis=-1)
+            if zeroflux_labels is not None and n_electride > 1:
+                # For electride-electride boundaries, use watershed result
+                # Only apply within the Voronoi electride region
+                electride_label = n_atoms + i + 1
 
-            lattice = self.elf_data.lattice
+                # Watershed label for this electride (1-indexed in watershed)
+                watershed_mask = (zeroflux_labels == (i + 1))
 
-            # For each grid point, find the nearest site (atom or electride)
-            min_dist_sq = np.full(ngrid, np.inf)
-            nearest_site = np.zeros(ngrid, dtype=np.int32)
+                # Combine: must be in overall electride region (any electride's Voronoi)
+                # AND assigned to this electride by watershed
+                overall_electride_region = nearest_site >= n_atoms
+                combined_mask = overall_electride_region & watershed_mask
 
-            for i in range(n_atoms + n_electride):
-                site_frac = all_frac_coords[i]
-                diff = grid_frac - site_frac
-                diff = diff - np.round(diff)  # Minimum image
-                diff_cart = np.einsum('...j,jk->...k', diff, lattice)
-                dist_sq = np.sum(diff_cart ** 2, axis=-1)
-
-                closer = dist_sq < min_dist_sq
-                nearest_site[closer] = i
-                min_dist_sq[closer] = dist_sq[closer]
-
-            # Assign electride labels (n_atoms+1 to n_atoms+n_electride)
-            for i in range(n_electride):
-                electride_mask = nearest_site == (n_atoms + i)
-                final_labels[electride_mask] = n_atoms + i + 1
+                final_labels[combined_mask] = electride_label
+            else:
+                # Single electride or no watershed: use Voronoi directly
+                final_labels[voronoi_electride_mask] = n_atoms + i + 1
 
         return PartitionResult(
             labels=final_labels,

@@ -69,11 +69,11 @@ PROCAR
 vasprun.xml
 XDATCAR
 
-# Output files (keep in examples for demonstration)
-# *.png
-# *.pdf
-# *.cif
-# *.vasp
+# Output files in examples
+examples/*.png
+examples/*.cif
+examples/*.vasp
+examples/*.pdf
 
 # Claude
 CLAUDE.md
