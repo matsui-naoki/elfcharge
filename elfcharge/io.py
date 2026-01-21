@@ -274,6 +274,113 @@ def read_chgcar(filepath: str) -> GridData:
     return read_vasp_grid(filepath)
 
 
+def interpolate_grid(
+    data: GridData,
+    target_ngrid: Tuple[int, int, int],
+    method: str = 'linear',
+    clip_range: Optional[Tuple[float, float]] = None
+) -> GridData:
+    """
+    Interpolate grid data to a different resolution.
+
+    This is useful for:
+    - Matching grid sizes between ELFCAR and CHGCAR
+    - Upsampling for higher resolution analysis
+    - Downsampling for faster computation
+
+    Parameters
+    ----------
+    data : GridData
+        Input grid data
+    target_ngrid : Tuple[int, int, int]
+        Target grid dimensions (NGX, NGY, NGZ)
+    method : str
+        Interpolation method. Options:
+        - 'linear': Trilinear interpolation (default, fast)
+        - 'cubic': Tricubic spline interpolation (smoother)
+        - 'nearest': Nearest neighbor (fastest, no smoothing)
+    clip_range : Tuple[float, float], optional
+        If provided, clip interpolated values to this range.
+        Useful for ELF data: clip_range=(0.0, 1.0)
+
+    Returns
+    -------
+    GridData
+        New GridData with interpolated grid at target resolution
+
+    Examples
+    --------
+    >>> elf = read_elfcar("ELFCAR")
+    >>> chg = read_chgcar("CHGCAR")
+    >>> # Match CHGCAR grid to ELFCAR grid
+    >>> chg_interp = interpolate_grid(chg, elf.ngrid)
+    """
+    from scipy.interpolate import RegularGridInterpolator
+
+    # Original grid coordinates (fractional: 0 to 1)
+    x_orig = np.linspace(0, 1, data.ngrid[0], endpoint=False)
+    y_orig = np.linspace(0, 1, data.ngrid[1], endpoint=False)
+    z_orig = np.linspace(0, 1, data.ngrid[2], endpoint=False)
+
+    # Pad for periodic boundary conditions
+    # Add one extra point at the end that wraps around
+    x_padded = np.append(x_orig, 1.0)
+    y_padded = np.append(y_orig, 1.0)
+    z_padded = np.append(z_orig, 1.0)
+
+    # Pad grid data for periodicity
+    grid_padded = np.zeros((data.ngrid[0] + 1, data.ngrid[1] + 1, data.ngrid[2] + 1))
+    grid_padded[:-1, :-1, :-1] = data.grid
+    grid_padded[-1, :-1, :-1] = data.grid[0, :, :]  # x periodicity
+    grid_padded[:-1, -1, :-1] = data.grid[:, 0, :]  # y periodicity
+    grid_padded[:-1, :-1, -1] = data.grid[:, :, 0]  # z periodicity
+    grid_padded[-1, -1, :-1] = data.grid[0, 0, :]   # xy edge
+    grid_padded[-1, :-1, -1] = data.grid[0, :, 0]   # xz edge
+    grid_padded[:-1, -1, -1] = data.grid[:, 0, 0]   # yz edge
+    grid_padded[-1, -1, -1] = data.grid[0, 0, 0]    # corner
+
+    # Create interpolator
+    if method == 'nearest':
+        interp_method = 'nearest'
+    elif method == 'cubic':
+        interp_method = 'cubic'
+    else:
+        interp_method = 'linear'
+
+    interpolator = RegularGridInterpolator(
+        (x_padded, y_padded, z_padded),
+        grid_padded,
+        method=interp_method,
+        bounds_error=False,
+        fill_value=None
+    )
+
+    # Target grid coordinates
+    x_new = np.linspace(0, 1, target_ngrid[0], endpoint=False)
+    y_new = np.linspace(0, 1, target_ngrid[1], endpoint=False)
+    z_new = np.linspace(0, 1, target_ngrid[2], endpoint=False)
+
+    # Create meshgrid for interpolation
+    xx, yy, zz = np.meshgrid(x_new, y_new, z_new, indexing='ij')
+    points = np.column_stack([xx.ravel(), yy.ravel(), zz.ravel()])
+
+    # Interpolate
+    new_grid = interpolator(points).reshape(target_ngrid)
+
+    # Clip values if requested
+    if clip_range is not None:
+        new_grid = np.clip(new_grid, clip_range[0], clip_range[1])
+
+    return GridData(
+        lattice=data.lattice.copy(),
+        species=data.species.copy(),
+        num_atoms=data.num_atoms.copy(),
+        frac_coords=data.frac_coords.copy(),
+        grid=new_grid,
+        ngrid=target_ngrid
+    )
+
+
 def write_chgcar(filepath: str, data: GridData, comment: str = "BadELF output"):
     """
     Write data in CHGCAR format

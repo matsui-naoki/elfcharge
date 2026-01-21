@@ -32,7 +32,7 @@ Example usage:
 
 from importlib.metadata import version, PackageNotFoundError
 
-from .io import read_elfcar, read_chgcar, GridData, check_grid_resolution
+from .io import read_elfcar, read_chgcar, GridData, check_grid_resolution, interpolate_grid
 from .analysis import ELFAnalyzer, ElectrideSite, BondPair, ELFRadii, AtomRadii  # AtomRadii is deprecated alias
 from .partition import VoronoiPartitioner
 from .integrate import ATOMIC_NUMBERS, DEFAULT_ZVAL
@@ -74,6 +74,7 @@ __all__ = [
     "read_elfcar",
     "read_chgcar",
     "GridData",
+    "interpolate_grid",
     # Analysis
     "ELFAnalyzer",
     "ElectrideSite",
